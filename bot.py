@@ -10,12 +10,15 @@ import threading
 # Config
 # -----------------------------
 VATSIM_DATA_URL = "https://data.vatsim.net/v3/vatsim-data.json"
-CHANNEL_ID = 1420399607661465673  # Replace with your channel ID
+CHANNEL_ID = 1420399607661465673  # Replace with your Discord channel ID
 AIRPORTS = {
     "OLBA": "🇱🇧 Beirut",
     "OSDI": "🇸🇾 Damascus",
     "ORBI": "🇮🇶 Baghdad"
 }
+
+# Discord-hosted banner URL
+BANNER_URL = "https://cdn.discordapp.com/attachments/1133008419142500434/1423108256594661457/BANNER.png"
 
 intents = discord.Intents.default()
 
@@ -27,6 +30,7 @@ class MyClient(discord.Client):
         super().__init__(intents=intents)
         self.flights = []
         self.atc_sessions = {}
+        self.last_report_date = None  # Prevent double-post
 
     async def setup_hook(self):
         self.bg_task = asyncio.create_task(self.check_vatsim())
@@ -49,12 +53,11 @@ class MyClient(discord.Client):
                     now = datetime.now(timezone.utc)
 
                     # -----------------------------
-                    # Track flights
+                    # Track flights for today only
                     # -----------------------------
-                    self.flights = [f for f in self.flights if f["time"] > now - timedelta(hours=24)]
                     for pilot in data.get("pilots", []):
-                        dep = pilot.get("departure")
-                        arr = pilot.get("arrival")
+                        dep = pilot.get("planned_departure_airport")
+                        arr = pilot.get("planned_arrival_airport")
                         callsign = pilot.get("callsign")
                         if dep in AIRPORTS or arr in AIRPORTS:
                             self.flights.append({
@@ -82,12 +85,17 @@ class MyClient(discord.Client):
                                     self.atc_sessions[cid]["duration"] += timedelta(minutes=1)
 
                     # -----------------------------
-                    # Post report daily at 08:00 UTC
+                    # Post report daily at 01:00 UTC
                     # -----------------------------
                     utc_now = datetime.utcnow()
-                    if utc_now.hour == 8 and utc_now.minute < 2:
+                    if utc_now.hour == 1 and self.last_report_date != utc_now.date():
                         embed = self.generate_report()
                         await channel.send(embed=embed)
+                        self.last_report_date = utc_now.date()
+
+                        # Reset flights and ATC sessions for the next day
+                        self.flights = []
+                        self.atc_sessions = {}
 
             except Exception as e:
                 print(f"Error: {e}")
@@ -139,10 +147,11 @@ class MyClient(discord.Client):
             embed.add_field(name="Longest ATC Session", value="No sessions", inline=False)
             embed.add_field(name="Controller of the Day", value="No controllers logged", inline=False)
 
+        # Add large Discord-hosted banner image
+         embed.set_image(url=BANNER_URL)
         embed.set_footer(text="Levant vACC Operations")
-        embed.set_image(url="https://your-custom-banner.png")  # optional
         return embed
-
+        
 # -----------------------------
 # Flask Web Server (keeps Render alive)
 # -----------------------------
