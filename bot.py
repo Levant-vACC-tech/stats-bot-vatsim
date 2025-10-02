@@ -148,10 +148,10 @@ class MyClient(discord.Client):
             embed.add_field(name="Controller of the Day", value="No controllers logged", inline=False)
 
         # Add large Discord-hosted banner image
-         embed.set_image(url=BANNER_URL)
+        embed.set_image(url=BANNER_URL)
         embed.set_footer(text="Levant vACC Operations")
         return embed
-        
+
 # -----------------------------
 # Flask Web Server (keeps Render alive)
 # -----------------------------
