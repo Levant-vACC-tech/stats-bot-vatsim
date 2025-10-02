@@ -85,10 +85,10 @@ class MyClient(discord.Client):
                                     self.atc_sessions[cid]["duration"] += timedelta(minutes=1)
 
                     # -----------------------------
-                    # Post report daily at 01:10 UTC
+                    # Post report daily at 01:00 UTC
                     # -----------------------------
                     utc_now = datetime.utcnow()
-                    if utc_now.hour == 1 and utc_now.minute == 10 and self.last_report_date != utc_now.date():
+                    if utc_now.hour == 1 and self.last_report_date != utc_now.date():
                         embed = self.generate_report()
                         await channel.send(embed=embed)
                         self.last_report_date = utc_now.date()
@@ -116,3 +116,62 @@ class MyClient(discord.Client):
             sessions = sum(1 for cid, s in self.atc_sessions.items() if icao in s["callsign"])
 
             embed.add_field(
+                name=f"{icao} – {name}",
+                value=f"Departures: {departures}\nArrivals: {arrivals}\nATC Sessions: {sessions}",
+                inline=False
+            )
+
+        # ATC longest session
+        if self.atc_sessions:
+            longest = max(self.atc_sessions.items(), key=lambda x: x[1]["duration"])
+            cid, info = longest
+            hours, remainder = divmod(longest[1]["duration"].seconds, 3600)
+            minutes = remainder // 60
+            embed.add_field(
+                name="Longest ATC Session",
+                value=f"{info['callsign']} – {hours}h {minutes}m ({cid})",
+                inline=False
+            )
+
+            # Controller of the Day
+            top = max(self.atc_sessions.items(), key=lambda x: x[1]["duration"])
+            cid, info = top
+            hours, remainder = divmod(info["duration"].seconds, 3600)
+            minutes = remainder // 60
+            embed.add_field(
+                name="Controller of the Day",
+                value=f"CID {cid}\nTotal: {hours}h {minutes}m",
+                inline=False
+            )
+        else:
+            embed.add_field(name="Longest ATC Session", value="No sessions", inline=False)
+            embed.add_field(name="Controller of the Day", value="No controllers logged", inline=False)
+
+        # Add large Discord-hosted banner image
+        embed.set_image(url=BANNER_URL)
+        embed.set_footer(text="Levant vACC Operations")
+        return embed
+
+# -----------------------------
+# Flask Web Server (keeps Render alive)
+# -----------------------------
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return "✅ Levant vACC Bot is running!"
+
+def run_discord_bot():
+    token = os.environ.get("DISCORD_TOKEN")
+    client = MyClient(intents=intents)
+    client.run(token)
+
+# Run Discord bot in a background thread
+threading.Thread(target=run_discord_bot, daemon=True).start()
+
+# -----------------------------
+# Start Flask (main Render process)
+# -----------------------------
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host="0.0.0.0", port=port)
