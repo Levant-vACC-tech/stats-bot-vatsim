@@ -10,7 +10,7 @@ import threading
 # Config
 # -----------------------------
 VATSIM_DATA_URL = "https://data.vatsim.net/v3/vatsim-data.json"
-CHANNEL_ID = 1420399607661465673  # Replace with your Discord channel ID
+CHANNEL_ID = 1423190842641743912  # Replace with your Discord channel ID
 AIRPORTS = {
     "OLBA": "🇱🇧 Beirut",
     "OSDI": "🇸🇾 Damascus",
