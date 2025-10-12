@@ -17,9 +17,7 @@ AIRPORTS = {
     "ORBI": "🇮🇶 Baghdad"
 }
 
-# Discord-hosted banner URL
 BANNER_URL = "https://cdn.discordapp.com/attachments/1133008419142500434/1423108256594661457/BANNER.png"
-
 intents = discord.Intents.default()
 
 # -----------------------------
@@ -47,25 +45,42 @@ class MyClient(discord.Client):
 
         while not self.is_closed():
             try:
-                r = requests.get(VATSIM_DATA_URL)
+                print("🌍 Fetching VATSIM data...")
+                r = requests.get(VATSIM_DATA_URL, timeout=15)
                 if r.status_code == 200:
                     data = r.json()
                     now = datetime.now(timezone.utc)
 
                     # -----------------------------
-                    # Track flights for today only
+                    # Track flights (using nested flight_plan data)
                     # -----------------------------
                     for pilot in data.get("pilots", []):
-                        dep = pilot.get("planned_departure_airport")
-                        arr = pilot.get("planned_arrival_airport")
-                        callsign = pilot.get("callsign")
-                        if dep in AIRPORTS or arr in AIRPORTS:
-                            self.flights.append({
-                                "callsign": callsign,
-                                "dep": dep,
-                                "arr": arr,
-                                "time": now
-                            })
+                        callsign = pilot.get("callsign", "").strip()
+                        if not callsign:
+                            continue
+
+                        fp = pilot.get("flight_plan", {})
+                        dep = pilot.get("planned_departure_airport") or fp.get("departure")
+                        arr = pilot.get("planned_arrival_airport") or fp.get("arrival")
+
+                        if not dep and not arr:
+                            continue
+
+                        dep = dep.strip().upper() if dep else None
+                        arr = arr.strip().upper() if arr else None
+
+                        # Only record if linked to monitored airports
+                        if (dep and dep in AIRPORTS) or (arr and arr in AIRPORTS):
+                            # Prevent duplicates
+                            exists = any(f["callsign"] == callsign and f["dep"] == dep and f["arr"] == arr for f in self.flights)
+                            if not exists:
+                                self.flights.append({
+                                    "callsign": callsign,
+                                    "dep": dep,
+                                    "arr": arr,
+                                    "time": now
+                                })
+                                print(f"✈️ Logged {callsign}: {dep or 'UNK'} ➜ {arr or 'UNK'}")
 
                     # -----------------------------
                     # Track ATC sessions
@@ -81,6 +96,7 @@ class MyClient(discord.Client):
                                         "start": now,
                                         "duration": timedelta()
                                     }
+                                    print(f"🧑‍✈️ Started ATC session: {callsign}")
                                 else:
                                     self.atc_sessions[cid]["duration"] += timedelta(minutes=1)
 
@@ -89,19 +105,26 @@ class MyClient(discord.Client):
                     # -----------------------------
                     utc_now = datetime.utcnow()
                     if utc_now.hour == 1 and self.last_report_date != utc_now.date():
+                        print("📊 Sending daily report...")
                         embed = self.generate_report()
                         await channel.send(embed=embed)
                         self.last_report_date = utc_now.date()
 
-                        # Reset flights and ATC sessions for the next day
+                        # Reset for next day
                         self.flights = []
                         self.atc_sessions = {}
 
+                else:
+                    print(f"⚠️ Failed to fetch data (HTTP {r.status_code})")
+
             except Exception as e:
-                print(f"Error: {e}")
+                print(f"❌ Error fetching VATSIM data: {e}")
 
             await asyncio.sleep(60)
 
+    # -----------------------------
+    # Generate Daily Report
+    # -----------------------------
     def generate_report(self):
         embed = discord.Embed(
             title=f"Daily VATSIM Report - {datetime.utcnow().strftime('%Y-%m-%d')}",
@@ -109,7 +132,6 @@ class MyClient(discord.Client):
             color=0x1abc9c
         )
 
-        # Flights stats
         for icao, name in AIRPORTS.items():
             arrivals = sum(1 for f in self.flights if f["arr"] == icao)
             departures = sum(1 for f in self.flights if f["dep"] == icao)
@@ -121,57 +143,40 @@ class MyClient(discord.Client):
                 inline=False
             )
 
-        # ATC longest session
+        # ATC summary
         if self.atc_sessions:
             longest = max(self.atc_sessions.items(), key=lambda x: x[1]["duration"])
             cid, info = longest
-            hours, remainder = divmod(longest[1]["duration"].seconds, 3600)
+            hours, remainder = divmod(info["duration"].seconds, 3600)
             minutes = remainder // 60
             embed.add_field(
                 name="Longest ATC Session",
                 value=f"{info['callsign']} – {hours}h {minutes}m ({cid})",
                 inline=False
             )
-
-            # Controller of the Day
-            top = max(self.atc_sessions.items(), key=lambda x: x[1]["duration"])
-            cid, info = top
-            hours, remainder = divmod(info["duration"].seconds, 3600)
-            minutes = remainder // 60
-            embed.add_field(
-                name="Controller of the Day",
-                value=f"CID {cid}\nTotal: {hours}h {minutes}m",
-                inline=False
-            )
         else:
             embed.add_field(name="Longest ATC Session", value="No sessions", inline=False)
-            embed.add_field(name="Controller of the Day", value="No controllers logged", inline=False)
 
-        # Add large Discord-hosted banner image
         embed.set_image(url=BANNER_URL)
         embed.set_footer(text="Levant vACC Operations")
         return embed
 
 # -----------------------------
-# Flask Web Server (keeps Render alive)
+# Flask Web Server (keep alive)
 # -----------------------------
 app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "✅ Levant vACC Bot is running!"
+    return "✅ Levant vACC Daily Stats Bot is running!"
 
 def run_discord_bot():
     token = os.environ.get("DISCORD_TOKEN")
     client = MyClient(intents=intents)
     client.run(token)
 
-# Run Discord bot in a background thread
 threading.Thread(target=run_discord_bot, daemon=True).start()
 
-# -----------------------------
-# Start Flask (main Render process)
-# -----------------------------
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
