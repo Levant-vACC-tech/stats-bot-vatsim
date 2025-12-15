@@ -11,13 +11,19 @@ import threading
 # -----------------------------
 VATSIM_DATA_URL = "https://data.vatsim.net/v3/vatsim-data.json"
 CHANNEL_ID = 1423190842641743912  # Replace with your Discord channel ID
+
 AIRPORTS = {
     "OLBA": "🇱🇧 Beirut",
     "OSDI": "🇸🇾 Damascus",
-    "ORBI": "🇮🇶 Baghdad"
+    "ORBI": "🇮🇶 Baghdad",
 }
 
-BANNER_URL = "https://cdn.discordapp.com/attachments/1133008419142500434/1423108256594661457/BANNER.png"
+FIRS = ["OLBB", "OSTT", "ORBB"]
+
+BANNER_URL = (
+    "https://cdn.discordapp.com/attachments/1133008419142500434/"
+    "1423108256594661457/BANNER.png"
+)
 intents = discord.Intents.default()
 
 # -----------------------------
@@ -28,9 +34,10 @@ class MyClient(discord.Client):
         super().__init__(intents=intents)
         self.flights = []
         self.atc_sessions = {}
-        self.last_report_date = None  # Prevent double-post
+        self.last_report_date = None  # Prevent double posts
 
     async def setup_hook(self):
+        # start background task
         self.bg_task = asyncio.create_task(self.check_vatsim())
 
     async def on_ready(self):
@@ -52,16 +59,16 @@ class MyClient(discord.Client):
                     now = datetime.now(timezone.utc)
 
                     # -----------------------------
-                    # Track flights (using nested flight_plan data)
+                    # Track flights
                     # -----------------------------
                     for pilot in data.get("pilots", []):
                         callsign = pilot.get("callsign", "").strip()
                         if not callsign:
                             continue
 
-                        fp = pilot.get("flight_plan", {})
-                        dep = pilot.get("planned_departure_airport") or fp.get("departure")
-                        arr = pilot.get("planned_arrival_airport") or fp.get("arrival")
+                        fp = pilot.get("flight_plan", {}) or {}
+                        dep = fp.get("departure")
+                        arr = fp.get("arrival")
 
                         if not dep and not arr:
                             continue
@@ -69,17 +76,18 @@ class MyClient(discord.Client):
                         dep = dep.strip().upper() if dep else None
                         arr = arr.strip().upper() if arr else None
 
-                        # Only record if linked to monitored airports
+                        # Only record flights linked to monitored airports
                         if (dep and dep in AIRPORTS) or (arr and arr in AIRPORTS):
-                            # Prevent duplicates
-                            exists = any(f["callsign"] == callsign and f["dep"] == dep and f["arr"] == arr for f in self.flights)
+                            exists = any(
+                                f["callsign"] == callsign
+                                and f["dep"] == dep
+                                and f["arr"] == arr
+                                for f in self.flights
+                            )
                             if not exists:
-                                self.flights.append({
-                                    "callsign": callsign,
-                                    "dep": dep,
-                                    "arr": arr,
-                                    "time": now
-                                })
+                                self.flights.append(
+                                    {"callsign": callsign, "dep": dep, "arr": arr, "time": now}
+                                )
                                 print(f"✈️ Logged {callsign}: {dep or 'UNK'} ➜ {arr or 'UNK'}")
 
                     # -----------------------------
@@ -88,17 +96,19 @@ class MyClient(discord.Client):
                     for atc in data.get("controllers", []):
                         callsign = atc.get("callsign", "")
                         cid = atc.get("cid")
-                        for icao in AIRPORTS:
-                            if icao in callsign:
-                                if cid not in self.atc_sessions:
-                                    self.atc_sessions[cid] = {
-                                        "callsign": callsign,
-                                        "start": now,
-                                        "duration": timedelta()
-                                    }
-                                    print(f"🧑‍✈️ Started ATC session: {callsign}")
-                                else:
-                                    self.atc_sessions[cid]["duration"] += timedelta(minutes=1)
+                        if not cid:
+                            continue
+
+                        if any(fir in callsign for fir in FIRS):
+                            if cid not in self.atc_sessions:
+                                self.atc_sessions[cid] = {
+                                    "callsign": callsign,
+                                    "start": now,
+                                    "duration": timedelta(),
+                                }
+                                print(f"🧑✈️ Started ATC session: {callsign}")
+                            else:
+                                self.atc_sessions[cid]["duration"] += timedelta(minutes=1)
 
                     # -----------------------------
                     # Post report daily at 01:00 UTC
@@ -129,21 +139,33 @@ class MyClient(discord.Client):
         embed = discord.Embed(
             title=f"Daily VATSIM Report - {datetime.utcnow().strftime('%Y-%m-%d')}",
             description="Summary of Departures, Arrivals, and ATC Activity",
-            color=0x1abc9c
+            color=0x1ABC9C,
         )
 
         for icao, name in AIRPORTS.items():
             arrivals = sum(1 for f in self.flights if f["arr"] == icao)
             departures = sum(1 for f in self.flights if f["dep"] == icao)
-            sessions = sum(1 for cid, s in self.atc_sessions.items() if icao in s["callsign"])
+            sessions = sum(
+                1 for cid, s in self.atc_sessions.items() if icao in s["callsign"]
+            )
 
             embed.add_field(
                 name=f"{icao} – {name}",
                 value=f"Departures: {departures}\nArrivals: {arrivals}\nATC Sessions: {sessions}",
-                inline=False
+                inline=False,
             )
 
-        # ATC summary
+        # FIR summary
+        fir_activity = [
+            s["callsign"] for s in self.atc_sessions.values() if any(f in s["callsign"] for f in FIRS)
+        ]
+        if fir_activity:
+            firs_list = "\n".join(sorted(set(fir_activity)))
+            embed.add_field(name="FIR ATC Online", value=firs_list, inline=False)
+        else:
+            embed.add_field(name="FIR ATC Online", value="No FIR controllers found", inline=False)
+
+        # Longest ATC session
         if self.atc_sessions:
             longest = max(self.atc_sessions.items(), key=lambda x: x[1]["duration"])
             cid, info = longest
@@ -152,7 +174,7 @@ class MyClient(discord.Client):
             embed.add_field(
                 name="Longest ATC Session",
                 value=f"{info['callsign']} – {hours}h {minutes}m ({cid})",
-                inline=False
+                inline=False,
             )
         else:
             embed.add_field(name="Longest ATC Session", value="No sessions", inline=False)
@@ -160,6 +182,7 @@ class MyClient(discord.Client):
         embed.set_image(url=BANNER_URL)
         embed.set_footer(text="Levant vACC Operations")
         return embed
+
 
 # -----------------------------
 # Flask Web Server (keep alive)
@@ -172,8 +195,13 @@ def home():
 
 def run_discord_bot():
     token = os.environ.get("DISCORD_TOKEN")
+    if not token:
+        print("❌ DISCORD_TOKEN environment variable is missing!")
+        return
+
     client = MyClient(intents=intents)
     client.run(token)
+
 
 threading.Thread(target=run_discord_bot, daemon=True).start()
 
