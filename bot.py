@@ -34,10 +34,10 @@ class MyClient(discord.Client):
         super().__init__(intents=intents)
         self.flights = []
         self.atc_sessions = {}
-        self.last_report_date = None  # Prevent double posts
+        self.last_report_date = None
+        self.last_check_time = None  # hold last timestamp for duration calc
 
     async def setup_hook(self):
-        # start background task
         self.bg_task = asyncio.create_task(self.check_vatsim())
 
     async def on_ready(self):
@@ -59,7 +59,7 @@ class MyClient(discord.Client):
                     now = datetime.now(timezone.utc)
 
                     # -----------------------------
-                    # Track flights
+                    # Flights tracking
                     # -----------------------------
                     for pilot in data.get("pilots", []):
                         callsign = pilot.get("callsign", "").strip()
@@ -67,16 +67,12 @@ class MyClient(discord.Client):
                             continue
 
                         fp = pilot.get("flight_plan", {}) or {}
-                        dep = fp.get("departure")
-                        arr = fp.get("arrival")
+                        dep = (fp.get("departure") or "").strip().upper()
+                        arr = (fp.get("arrival") or "").strip().upper()
 
                         if not dep and not arr:
                             continue
 
-                        dep = dep.strip().upper() if dep else None
-                        arr = arr.strip().upper() if arr else None
-
-                        # Only record flights linked to monitored airports
                         if (dep and dep in AIRPORTS) or (arr and arr in AIRPORTS):
                             exists = any(
                                 f["callsign"] == callsign
@@ -91,15 +87,22 @@ class MyClient(discord.Client):
                                 print(f"✈️ Logged {callsign}: {dep or 'UNK'} ➜ {arr or 'UNK'}")
 
                     # -----------------------------
-                    # Track ATC sessions
+                    # ATC tracking
                     # -----------------------------
+                    active_cids = set()
+
                     for atc in data.get("controllers", []):
                         callsign = atc.get("callsign", "")
                         cid = atc.get("cid")
-                        if not cid:
+                        if not cid or not callsign:
                             continue
 
-                        if any(fir in callsign for fir in FIRS):
+                        # detect both FIR and airport controllers
+                        if any(fir in callsign for fir in FIRS) or any(
+                            icao in callsign for icao in AIRPORTS
+                        ):
+                            active_cids.add(cid)
+
                             if cid not in self.atc_sessions:
                                 self.atc_sessions[cid] = {
                                     "callsign": callsign,
@@ -107,11 +110,27 @@ class MyClient(discord.Client):
                                     "duration": timedelta(),
                                 }
                                 print(f"🧑✈️ Started ATC session: {callsign}")
-                            else:
-                                self.atc_sessions[cid]["duration"] += timedelta(minutes=1)
+
+                    # update duration
+                    if self.last_check_time is not None:
+                        elapsed = now - self.last_check_time
+                        for cid in active_cids:
+                            if cid in self.atc_sessions:
+                                self.atc_sessions[cid]["duration"] += elapsed
+
+                    # remove inactive controllers (ended sessions)
+                    ended_cids = [
+                        cid for cid in self.atc_sessions if cid not in active_cids
+                    ]
+                    for cid in ended_cids:
+                        print(
+                            f"🛑 ATC session ended: {self.atc_sessions[cid]['callsign']}"
+                        )
+
+                    self.last_check_time = now
 
                     # -----------------------------
-                    # Post report daily at 01:00 UTC
+                    # Daily report
                     # -----------------------------
                     utc_now = datetime.utcnow()
                     if utc_now.hour == 1 and self.last_report_date != utc_now.date():
@@ -120,9 +139,10 @@ class MyClient(discord.Client):
                         await channel.send(embed=embed)
                         self.last_report_date = utc_now.date()
 
-                        # Reset for next day
+                        # reset for next day
                         self.flights = []
                         self.atc_sessions = {}
+                        self.last_check_time = None
 
                 else:
                     print(f"⚠️ Failed to fetch data (HTTP {r.status_code})")
@@ -133,7 +153,7 @@ class MyClient(discord.Client):
             await asyncio.sleep(60)
 
     # -----------------------------
-    # Generate Daily Report
+    # Generate daily report
     # -----------------------------
     def generate_report(self):
         embed = discord.Embed(
@@ -145,39 +165,46 @@ class MyClient(discord.Client):
         for icao, name in AIRPORTS.items():
             arrivals = sum(1 for f in self.flights if f["arr"] == icao)
             departures = sum(1 for f in self.flights if f["dep"] == icao)
-            sessions = sum(
-                1 for cid, s in self.atc_sessions.items() if icao in s["callsign"]
-            )
+            atc_count = sum(1 for s in self.atc_sessions.values() if icao in s["callsign"])
 
             embed.add_field(
                 name=f"{icao} – {name}",
-                value=f"Departures: {departures}\nArrivals: {arrivals}\nATC Sessions: {sessions}",
+                value=f"Departures: {departures}\nArrivals: {arrivals}\nATC Sessions: {atc_count}",
                 inline=False,
             )
 
-        # FIR summary
-        fir_activity = [
-            s["callsign"] for s in self.atc_sessions.values() if any(f in s["callsign"] for f in FIRS)
-        ]
-        if fir_activity:
-            firs_list = "\n".join(sorted(set(fir_activity)))
-            embed.add_field(name="FIR ATC Online", value=firs_list, inline=False)
-        else:
-            embed.add_field(name="FIR ATC Online", value="No FIR controllers found", inline=False)
-
+        # -----------------------------
         # Longest ATC session
+        # -----------------------------
         if self.atc_sessions:
-            longest = max(self.atc_sessions.items(), key=lambda x: x[1]["duration"])
+            longest = max(
+                self.atc_sessions.items(), key=lambda x: x[1]["duration"]
+            )
             cid, info = longest
-            hours, remainder = divmod(info["duration"].seconds, 3600)
-            minutes = remainder // 60
+            dur_h = info["duration"].seconds // 3600
+            dur_m = (info["duration"].seconds % 3600) // 60
             embed.add_field(
-                name="Longest ATC Session",
-                value=f"{info['callsign']} – {hours}h {minutes}m ({cid})",
+                name="🏆 Longest ATC Session",
+                value=f"{info['callsign']} — {dur_h}h {dur_m}m ({cid})",
+                inline=False,
+            )
+
+            # Controller of the day (most time in total)
+            controller_of_the_day = max(
+                self.atc_sessions.items(), key=lambda x: x[1]["duration"]
+            )
+            _, info2 = controller_of_the_day
+            embed.add_field(
+                name="👨✈️ Controller of the Day",
+                value=f"{info2['callsign']} — {int(info2['duration'].total_seconds() // 3600)}h {(info2['duration'].seconds % 3600)//60}m",
                 inline=False,
             )
         else:
-            embed.add_field(name="Longest ATC Session", value="No sessions", inline=False)
+            embed.add_field(
+                name="No ATC Activity",
+                value="No controllers recorded today.",
+                inline=False,
+            )
 
         embed.set_image(url=BANNER_URL)
         embed.set_footer(text="Levant vACC Operations")
