@@ -94,6 +94,8 @@ class MyClient(discord.Client):
                     for atc in data.get("controllers", []):
                         callsign = atc.get("callsign", "")
                         cid = atc.get("cid")
+                        name = atc.get("name", "Unknown Controller")
+
                         if not cid or not callsign:
                             continue
 
@@ -106,10 +108,12 @@ class MyClient(discord.Client):
                             if cid not in self.atc_sessions:
                                 self.atc_sessions[cid] = {
                                     "callsign": callsign,
+                                    "name": name,
+                                    "cid": cid,
                                     "start": now,
                                     "duration": timedelta(),
                                 }
-                                print(f"🧑✈️ Started ATC session: {callsign}")
+                                print(f"🧑✈️ Started ATC session: {callsign} ({name})")
 
                     # update duration
                     if self.last_check_time is not None:
@@ -124,7 +128,7 @@ class MyClient(discord.Client):
                     ]
                     for cid in ended_cids:
                         print(
-                            f"🛑 ATC session ended: {self.atc_sessions[cid]['callsign']}"
+                            f"🛑 ATC session ended: {self.atc_sessions[cid]['callsign']} ({self.atc_sessions[cid]['name']})"
                         )
 
                     self.last_check_time = now
@@ -177,26 +181,32 @@ class MyClient(discord.Client):
         # Longest ATC session
         # -----------------------------
         if self.atc_sessions:
-            longest = max(
-                self.atc_sessions.items(), key=lambda x: x[1]["duration"]
-            )
+            longest = max(self.atc_sessions.items(), key=lambda x: x[1]["duration"])
             cid, info = longest
             dur_h = info["duration"].seconds // 3600
             dur_m = (info["duration"].seconds % 3600) // 60
             embed.add_field(
-                name="🏆 Longest ATC Session",
-                value=f"{info['callsign']} — {dur_h}h {dur_m}m ({cid})",
+                name="🕐 Longest ATC Session",
+                value=(
+                    f"{info['callsign']} — {dur_h}h {dur_m}m\n"
+                    f"**Name:** {info['name']}\n**CID:** {cid}"
+                ),
                 inline=False,
             )
 
-            # Controller of the day (most time in total)
+            # Controller of the day (most time total)
             controller_of_the_day = max(
                 self.atc_sessions.items(), key=lambda x: x[1]["duration"]
             )
             _, info2 = controller_of_the_day
+            dur_h2 = int(info2["duration"].total_seconds() // 3600)
+            dur_m2 = (info2["duration"].seconds % 3600) // 60
             embed.add_field(
-                name="👨✈️ Controller of the Day",
-                value=f"{info2['callsign']} — {int(info2['duration'].total_seconds() // 3600)}h {(info2['duration'].seconds % 3600)//60}m",
+                name="👨🏆 Controller of the Day",
+                value=(
+                    f"{info2['callsign']} — {dur_h2}h {dur_m2}m\n"
+                    f"**Name:** {info2['name']}\n**CID:** {info2['cid']}"
+                ),
                 inline=False,
             )
         else:
@@ -219,6 +229,7 @@ app = Flask(__name__)
 @app.route("/")
 def home():
     return "✅ Levant vACC Daily Stats Bot is running!"
+
 
 def run_discord_bot():
     token = os.environ.get("DISCORD_TOKEN")
